@@ -1,1 +1,1 @@
-"# cheyette" 
+Finite differences implementation of the Cheyette short-rate model.

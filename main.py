@@ -8,12 +8,53 @@ Vector = List[float]
 Matrix = List[List[float]]
 
 
-def linspace(first: float, last: float, numpoints: int) -> List[float]:
-    step = (last - first) / (numpoints - 1)
-    res = [first]
-    for i in range(1, numpoints):
-        res += [res[-1] + step]
-    return res
+def apply_tridiagonal(lower: np.array, diag: np.array, upper: np.array, arg: np.array, out: np.array):
+    """
+        Computes out = A * arg for tridiagonal A
+
+        :lower: lower-diagonal part of A
+        :diag: diagonal part of A
+        :upper: upper-diagonal part of A
+        :arg: argument
+        :out: output
+    """
+    out[0] = diag[0] * arg[0] + upper[0] * arg[1]
+    out[-1] = lower[-1] * arg[-2] + diag[-1] * arg[-1]
+    for i, (up, mid, down) in enumerate(zip(arg, arg[1:], arg[2:]), 1):
+        out[i] = lower[i-1] * up + diag[i] * mid + upper[i] * down
+
+
+def solve_tridiagonal(lower, diag, upper, upper_tmp, rhs_tmp, rhs, sol):
+    """
+    solves A * sol = rhs with tridiagonal A
+
+    :lower: (n-1) lower-diagonal part of A
+    :diag: (n) diagonal part of A
+    :upper: (n-1) upper-diagonal part of A
+    :rhs: (n) right-hand-side
+    :sol: (n) solution
+    :rhs_tmp: (n) temporary buffer of the same size as rhs
+    :upper_tmp: (n-1) temporary buffer of the same size as upper
+
+    implements Thomas algorithm (rus. metod progonki)
+    https://en.wikipedia.org/wiki/Tridiagonal_matrix_algorithm
+    Complexity: 8*N-6, where N = Mesh.size
+    """
+    # Forward sweep (6*N-4 operations)
+    N = len(sol)
+    upper_tmp[0] = upper[0] / diag[0]
+    rhs_tmp[0] = rhs[0] / diag[0]
+    for k in range(1, N-1):
+        denominator = diag[k] - lower[k - 1] * upper_tmp[k - 1]
+        upper_tmp[k] = upper[k] / denominator
+        rhs_tmp[k] = (rhs[k] - lower[k - 1] * rhs_tmp[k - 1]) / denominator
+    rhs_tmp[-1] = (rhs[-1] - lower[-1] * rhs_tmp[-2]) \
+        / (diag[-1] - lower[-1] * upper_tmp[-2])
+
+    # Back substitution (2N-2 operations)
+    sol[-1] = rhs_tmp[-1]
+    for k in range(N-2, -1, -1):
+        sol[k] = rhs_tmp[k] - upper_tmp[k] * sol[k + 1]
 
 
 def bilin_interp(xs: Vector, ys: Vector, values: Matrix, x: float, y: float) -> float:
@@ -23,15 +64,12 @@ def bilin_interp(xs: Vector, ys: Vector, values: Matrix, x: float, y: float) -> 
     y1, y2 = ys[iy:iy+2]
     z11, z12 = values[ix, iy:iy+2]
     z21, z22 = values[ix+1, iy:iy+2]
-    return ( z11 * (x2 - x) * (y2  - y) \
-             + z12 * (x2 - x) * (y - y1) \
-             + z21 * (x - x1) * (y2 - y) \
+    return ( z11 * (x2 - x) * (y2  - y)
+             + z12 * (x2 - x) * (y - y1)
+             + z21 * (x - x1) * (y2 - y)
              + z22 * (x - x1) * (y - y1) ) \
             / ((x2 - x1) * (y2 - y1))
 
-
-def zeros(d1, d2):
-    return [[0.0 for _ in range(d2)] for _ in range(d1)]
 
 class Curve(ABC):
     @abstractmethod
@@ -43,10 +81,21 @@ class Curve(ABC):
         raise NotImplementedError
 
 
+class FlatCurve(Curve):
+    def __init__(self, rate: float) -> None:
+        self.rate = rate
+
+    def df(self, t: float) -> float:
+        return exp(- t * self.rate)
+
+    def fwd(self, t1: float, t2: float) -> float:
+        return self.rate
+
+
 class Mesh2D(ABC):
     def __init__(self) -> None:
-        self.xs : List[float] = []
-        self.ys : List[float] = []
+        self.xs: np.array = []
+        self.ys: np.array = []
 
     def zeros(self) -> List[List[float]]:
         return [[0.0 for _ in self.xs] for _ in self.ys]
@@ -60,19 +109,21 @@ class Mesh2D(ABC):
     def shape(self) -> Tuple[int, int]:
         return len(self.xs), len(self.ys)
 
-    @abstractmethod
-    def interpolate(self, values: List[List[float]], x: float, y: float) -> float:
-        raise NotImplementedError
+    def interpolate(self, values: np.array, x: float, y: float) -> float:
+        return bilin_interp(self.xs, self.ys, values, x, y)
 
 
-class CheyetteProduct(ABC):
-    @abstractmethod
-    def payoff(self, x: float) -> float:
-        raise NotImplementedError
+class UniformMesh2D(Mesh2D):
+    def __init__(self, xlim: Tuple[float, float], ylim: Tuple[float, float], x_freq: int, y_freq: int) -> None:
+        super().__init__()
+        self.xs = np.linspace(xlim[0], xlim[1], x_freq)
+        self.ys = np.linspace(ylim[0], ylim[1], y_freq)
 
-    @abstractmethod
-    def inner_value(self, t: float, x: float, y: float) -> float:
-        raise NotImplementedError
+        self.x_step = self.xs[1] - self.xs[0]
+        self.y_step = self.ys[1] - self.ys[0]
+
+    def __repr__(self):
+        return f'UniformMesh(xs=[{self.xs[0]:.2f},{self.xs[1]:.2f}..{self.xs[-1]:.2f}], ys=[{self.ys[0]:.2f},{self.ys[1]:.2f}..{self.ys[-1]:.2f}])'
 
 
 class CheyetteProcess(ABC):
@@ -107,10 +158,10 @@ class CheyetteProcess(ABC):
         raise NotImplementedError
 
     def df(self, t: float, T: float, x: float, y: float) -> float:
-        return self.curve.df(t) * exp(-self.G(t, T)*x - 0.5*self.G(t, T)**2 * y)
+        return self.curve.df(t) * exp(-self.G(t, T) * x - 0.5 * self.G(t, T) ** 2 * y)
 
     def annuity(self, t: float, x: float, y: float, underlying_times: List[float]) -> float:
-        return sum( (t2 - t1 ) * self.df(t, t2, x, y)
+        return sum((t2 - t1 ) * self.df(t, t2, x, y)
                     for t1, t2 in zip(underlying_times, underlying_times[1:]))
 
     def swap_value(self, t: float, x: float, y: float, strike: float, underlying_times: List[float]) -> float:
@@ -118,105 +169,47 @@ class CheyetteProcess(ABC):
                 - strike * self.annuity(t, x, y, underlying_times))
 
 
-class CheyetteStepping(ABC):
+class VasicekProcess(CheyetteProcess):
+    def __init__(self, curve: Curve, mean_rev: float, local_vol: float):
+        super().__init__(curve)
+        self.mean_rev = mean_rev
+        self.local_vol = local_vol  # Normal local vol
+
+    def mu_x(self, t: float, x: float, y: float) -> float:
+        return y - self.mean_rev * x
+
+    def gamma_x(self, t: float, x: float, y:float) -> float:
+        return self.local_vol
+
+    def mu_y(self, t: float, x: float, y: float) -> float:
+        return self.local_vol ** 2 - 2 * self.mean_rev * y
+
+    def G(self, t: float, T: float):
+        return (1 - np.exp(-self.mean_rev * (T - t))) / self.mean_rev
+
+    def __repr__(self):
+        return f'dx[t] = (y[t] - kappa*x[t])dt + sigma*dW[t]\ndy[t] = (sigma**2 - 2*kappa*y[t])dt\nkappa={self.mean_rev}, sigma={self.local_vol}'
+
+
+class CheyetteProduct(ABC):
     @abstractmethod
-    def do_one_step(self, mid_time, old_values, new_values,
-                    x_lower_boundary_values, x_upper_boundary_values,
-                    y_lower_boundary_values, y_upper_boundary_values) -> None:
+    def inner_value(self, t: float, x: float, y: float) -> float:
         raise NotImplementedError
 
 
-class CheyetteEngine:
-
-    def __init__(self, t_step: float, end_time: float, mesh: Mesh2D, product: CheyetteProduct,
-                 stepping_method: CheyetteStepping):
-        self.t_step = t_step
-        self.evolution_times = np.arange(end_time, -t_step, -t_step)
-        self.stepping_method = stepping_method
-        self.mesh = mesh
-        self.product = product
-        self.values = [[product.inner_value(0.0, x, y) for y in mesh.ys] for x in mesh.xs]
-        self.bc = CheyetteDirichletBC(self.evolution_times, mesh, product)
-
-    def solve(self):
-        for i, this_time, next_time in enumerate(zip(self.evolution_times, self.evolution_times[1:])):
-            mid_time = 0.5 * (this_time + next_time)
-            self.stepping_method.do_one_step(mid_time, self.values, self.values,
-                                             self.bc.x_lower_boundary_values[i], self.bc.x_upper_boundary_values[i],
-                                             self.bc.y_lower_boundary_values[i], self.bc.y_upper_boundary_values[i])
-        return self.mesh.interpolate(self.values, 0.0, 0.0)
-
-
-class UniformMesh2D(Mesh2D):
-    def __init__(self, xlim: Tuple[float, float], ylim: Tuple[float, float], x_freq: int, y_freq: int) -> None:
-        self.xs = np.linspace(xlim[0], xlim[1], x_freq)
-        self.ys = np.linspace(ylim[0], ylim[1], y_freq)
-
-        self.x_step = self.xs[1] - self.xs[0]
-        self.y_step = self.ys[1] - self.ys[0]
-
-    def interpolate(self, values: Matrix, x: float, y: float) -> float:
-        pass
-
-
-class CheyetteDirichletBC:
-    def __init__(self, evolution_times: List[float], mesh: Mesh2D, product: CheyetteProduct):
-        self.evolution_times = evolution_times
-        self.mesh = mesh
-        self.product = product
-
-        self.x_lower_boundary_values = zeros(len(evolution_times)-1, mesh.shape[1])
-        self.x_upper_boundary_values = zeros(len(evolution_times)-1, mesh.shape[1])
-        self.y_lower_boundary_values = zeros(len(evolution_times)-1, mesh.shape[0])
-        self.y_upper_boundary_values = zeros(len(evolution_times)-1, mesh.shape[0])
-
-        self.precompute_x_boundary_values()
-        self.precompute_y_boundary_values()
-
-    def precompute_x_boundary_values(self) -> None:
-        x_first = self.mesh.xs[0]
-        x_last = self.mesh.xs[-1]
-        for i, t in enumerate(self.evolution_times[:-1]):
-            for j, y in enumerate(self.mesh.ys):
-                self.x_upper_boundary_values[i][j] = self.product.inner_value(t, x_first, y)
-                self.x_lower_boundary_values[i][j] = self.product.inner_value(t, x_last, y)
-
-    def precompute_y_boundary_values(self) -> None:
-        # this is more easy for Douglas-Rachford, but evolved for Peaceman-Rachford
-        # we use an approximate boundary value which is exact if the coefs are time-independent
-        y_first = self.mesh.ys[0]
-        y_last = self.mesh.ys[-1]
-        for i, (t1, t2) in zip(self.evolution_times, self.evolution_times[1:]):
-            for j, x in self.mesh.xs:
-                mid_time = 0.5 * (t1 + t2)
-                self.y_upper_boundary_values[i][j] = self.product.inner_value(mid_time, x, y_first)
-                self.y_lower_boundary_values[i][j] = self.product.inner_value(mid_time, x, y_last)
-
-
-class CheyetteSwaption(CheyetteProduct):
-    def __init__(self, strike: float, exercise_time: float, underlying_times: List[float]) -> None:
+class PayerSwaption(CheyetteProduct):
+    def __init__(self, process: CheyetteProcess, strike: float, exercise_time: float,
+                 underlying_times: List[float]) -> None:
+        self.process = process
         self.strike = strike
         self.exercise_time = exercise_time
         self.underlying_times = underlying_times
 
+    def inner_value(self, t: float, x: float, y: float) -> float:
+        return max(self.process.swap_value(t, x, y, self.strike, self.underlying_times), 0)
 
-class CheyetteVasicekProcess(CheyetteProcess):
-    def __init__(self, mean_rev: float, local_vol: float):
-        self.mean_rev = mean_rev
-        self.local_vol = local_vol
-
-
-class FlatCurve(Curve):
-    def __init__(self, rate: float) -> None:
-        self.rate = rate
-
-    def df(self, t: float) -> float:
-        return exp(- t * self.rate)
-
-    def fwd(self, t1: float, t2: float) -> float:
-        return self.rate
-    
-
+    def __repr__(self):
+        return f'PayerSwaption(strike={strike:.2f}, exercise_time={exercise_time:.2f}, underlying_times={self.underlying_times})'
 
 
 class CheyetteOperator:
@@ -226,135 +219,253 @@ class CheyetteOperator:
         self.mesh = mesh
         self.shape = mesh.shape
 
-        self.mu_x = zeros(*mesh.shape)
-        self.mu_y = zeros(*mesh.shape)
-        self.gamma_x_squared = zeros(*mesh.shape)
-        self.r = zeros(*mesh.shape)
+        self.mu_x = np.zeros(mesh.shape)
+        self.mu_y = np.zeros(mesh.shape)
+        self.gamma_x_squared = np.zeros(mesh.shape)
+        self.r = np.zeros(mesh.shape)
 
-        # Initialization of a Dirichlet operator
-        self.x_lower_diag = [0.0] * (self.shape[0]-1)
-        self.x_diag = [1.0] * self.shape[0]
-        self.x_upper_diag = [0.0] * (self.shape[0]-1)
+        # Initialization of operators L_x and L_y
+        self.x_lower_diag = np.array([[0.0 for _ in mesh.ys] for _ in mesh.xs[1:]])
+        self.x_diag = np.zeros(mesh.shape)
+        self.x_upper_diag = np.array([[0.0 for _ in mesh.ys] for _ in mesh.xs[1:]])
 
-        self.y_lower_diag = [0.0] * (self.shape[1]-1)
-        self.y_diag = [1.0] * self.shape[1]
-        self.y_upper_diag = [0.0] * (self.shape[1]-1)
+        self.y_lower_diag = np.array([[0.0 for _ in mesh.ys[1:]] for _ in mesh.xs])
+        self.y_diag = np.zeros(mesh.shape)
+        self.y_upper_diag = np.array([[0.0 for _ in mesh.ys[:-1]] for _ in mesh.xs])
 
         # allocating memory for the solver
-        self.x_upper_diag_tmp = None
-        self.x_rhs_tmp = None
-        self.y_upper_diag_tmp = None
-        self.y_rhs_tmp = None
+        self.x_upper_diag_tmp = np.zeros((mesh.shape[0]-1, mesh.shape[1]))
+        self.x_rhs_tmp = np.zeros(mesh.shape)
+        self.y_upper_diag_tmp = np.zeros((mesh.shape[0], mesh.shape[1]-1))
+        self.y_rhs_tmp = np.zeros(mesh.shape)
 
     def evaluate_coefs(self, t: float) -> None:
-        self.mu_x[:] = [[self.process.mu_x(t, x, y) for y in self.mesh.ys] for x in self.mesh.xs]
-        self.mu_y[:] = [[self.process.mu_y(t, x, y) for y in self.mesh.ys] for x in self.mesh.xs]
-        self.gamma_x_squared[:] = [[self.process.gamma_x(t, x, y)**2 for y in self.mesh.ys] for x in self.mesh.xs]
-        self.r[:] = [[self.process.r(t, x) for y in self.mesh.ys] for x in self.mesh.xs]
+        """
+            Evaluate coefficients of the tridiagonal operators
+              A_x = Id - 0.5 * dt * L_x
+              A_y = Id + 0.5 * dt * L_y
+            where L_x, L_y are the tridiagonal operators:
+              L_x = mu_x * D_x + 0.5 * gamma**2 * D_x**2
+              L_y = my_u * D_y
+        """
+        self.mu_x[:] = np.array([[self.process.mu_x(t, x, y) for y in self.mesh.ys] for x in self.mesh.xs])
+        self.mu_y[:] = np.array([[self.process.mu_y(t, x, y) for y in self.mesh.ys] for x in self.mesh.xs])
+        self.gamma_x_squared[:] = np.array([[self.process.gamma_x(t, x, y)**2 for y in self.mesh.ys] for x in self.mesh.xs])
+        self.r[:] = np.array([[self.process.r(t, x) for _ in self.mesh.ys] for x in self.mesh.xs])
 
+        # Operator A_x = I - 0.5 * dt * L_x
         txx_ratio = self.t_step / (self.mesh.x_step**2)
-        self.x_upper_diag[1:] = 0.25 * txx_ratio * (self.gamma_x_squared + self.mesh.x_step * self.mu_x)
-        self.x_lower_diag[:-1] = 0.25 * txx_ratio * (self.gamma_x_squared - self.mesh.x_step * self.mu_x)
-        self.x_diag[1:-1] = 0.5 * txx_ratio * (self.gamma_x_squared + 0.5 * self.mesh.x_step**2 * self.r)
+        self.x_upper_diag[:] = - 0.25 * txx_ratio * (self.gamma_x_squared[:-1] + self.mesh.x_step * self.mu_x[:-1])
+        self.x_lower_diag[:] = - 0.25 * txx_ratio * (self.gamma_x_squared[1:] - self.mesh.x_step * self.mu_x[1:])
+        self.x_diag[:] = 1 - 0.5 * txx_ratio * (self.gamma_x_squared + 0.5 * self.mesh.x_step**2 * self.r)
 
-        self.y_upper_diag[1:] = 0.25 * self.t_step / self.mesh.y_step * self.my_y
-        self.y_lower_diag[:-1] = -self.y_upper_diag
-        self.y_diag[1:-1] = 0.25 * self.t_step * self.r
+        # Operator A_y = I + 0.5 * dt * L_y
+        self.y_upper_diag[:] = 0.25 * self.t_step / self.mesh.y_step * self.mu_y.T[:-1].T
+        self.y_lower_diag[:] = - 0.25 * self.t_step / self.mesh.y_step * self.mu_y.T[1:].T
+        self.y_diag[:] = 1 + 0.25 * self.t_step * self.r
 
-    @staticmethod
-    def solve(lower_diag, diag, upper_diag, upper_diag_tmp, rhs_tmp, rhs, sol):
-        """
-        solves (I + 0.5 * dt * L_x ) * sol = rhs
+        # Dirichlet boundary condition for x
+        self.x_diag[0, :] = np.ones(self.mesh.shape[1])
+        self.x_diag[-1, :] = np.ones(self.mesh.shape[1])
+        self.x_upper_diag[0, :] = np.zeros(self.mesh.shape[1])
+        self.x_lower_diag[-1, :] = np.zeros(self.mesh.shape[1])
 
-        implements Thomas algorithm (rus. metod progonki)
-        https://en.wikipedia.org/wiki/Tridiagonal_matrix_algorithm
-        Complexity: 8*N-6, where N = Mesh.size
-        """
-        # Forward sweep (6*N-4 operations)
-        upper_diag_tmp[0] = upper_diag[0] / diag[0]
-        rhs_tmp[0] = rhs[0] / diag[0]
-        for k in range(1, len(upper_diag)):
-            denominator = diag[k] - lower_diag[k - 1] * upper_diag_tmp[k - 1]
-            upper_diag_tmp[k] = upper_diag[k] / denominator
-            rhs_tmp[k] = (rhs[k] - lower_diag[k - 1] * rhs_tmp[k - 1]) \
-                              / denominator
+        # Dirichlet boundary condition for y
+        self.y_diag[:, 0] = np.ones(self.mesh.shape[0])
+        self.y_diag[:, -1] = np.ones(self.mesh.shape[0])
+        self.y_upper_diag[:, 0] = np.zeros(self.mesh.shape[0])
+        self.y_lower_diag[:, -1] = np.zeros(self.mesh.shape[0])
 
-        # Back substitution (2N-2 operations)
-        sol[-1] = rhs_tmp[-1]
-        for k in range(len(sol) - 2, -1, -1):
-            sol[k] = rhs_tmp[k] - upper_diag_tmp[k] * sol[k + 1]
+    def x_solve(self, rhs: np.array, sol: np.array) -> None:
+        for j, _ in enumerate(rhs.T):
+            solve_tridiagonal(self.x_lower_diag[:, j], self.x_diag[:, j], self.x_upper_diag[:, j],
+                       self.x_upper_diag_tmp[:, j], self.x_rhs_tmp[:, j], rhs[:, j], sol[:, j])
 
-    @staticmethod
-    def apply(lower_diag, diag, upper_diag, arg, out):
-        # computes out = (I - L) * arg
-        for i, (down, mid, up) in enumerate(zip(arg, arg[1:], arg[2:]), 1):
-            out[i] = lower_diag[i] * down + (1 - diag[i]) * mid + upper_diag[i] * up
+    def y_solve(self, rhs: np.array, sol: np.array) -> None:
+        for i, _ in enumerate(rhs):
+            solve_tridiagonal(self.y_lower_diag[i, :], self.y_diag[i, :], self.y_upper_diag[i, :],
+                       self.y_upper_diag_tmp[i, :], self.y_rhs_tmp[i, :], rhs[i, :], sol[i, :])
 
-    def x_solve(self, rhs: Matrix, sol: Matrix) -> None:
-        for rhs_row, sol_row in zip(rhs, sol):
-            self.solve(self.x_lower_diag, self.x_diag, self.x_upper_diag,
-                       self.x_upper_diag_tmp, self.x_rhs_tmp, rhs_row, sol_row)
+    def x_apply(self, arg: np.array, out: np.array) -> None:
+        for j, _ in enumerate(arg.T):
+            apply_tridiagonal(self.x_lower_diag[:, j], self.x_diag[:, j], self.x_upper_diag[:, j], arg[:, j], out[:, j])
 
-    def y_solve(self, rhs: Matrix, sol: Matrix) -> None:
-        for rhs_col, sol_col in zip(rhs.T, sol.T):
-            self.solve(self.y_lower_diag, self.y_diag, self.y_upper_diag,
-                       self.y_upper_diag_tmp, self.y_rhs_tmp, rhs_col, sol_col)
+    def y_apply(self, arg: np.array, out: np.array) -> None:
+        for i, _ in enumerate(arg):
+            apply_tridiagonal(self.y_lower_diag[i, :], self.y_diag[i, :], self.y_upper_diag[i, :], arg[i, :], out[i, :])
 
-    def x_apply(self, arg: Matrix, out: Matrix) -> None:
-        for arg_row, out_row in zip(arg, out):
-            self.apply(self.x_lower_diag, self.x_diag, self.x_upper_diag, arg_row, out_row)
-
-    def y_apply(self, arg: Matrix, out: Matrix) -> None:
-        for arg_col, out_col in zip(arg.T, out.T):
-            self.apply(self.y_lower_diag, self.y_diag, self.y_upper_diag, arg_col, out_col)
+    def __repr__(self):
+        return f'A_x = Id - 0.5 * t_step * L_x\nA_y = Id - 0.5 * t_step * L_y\nL_x = (y-kappa * x) * D_x + 0.5*sigma**2 * D_x**2 - (x+f(0,t))\nL_y = (sigma**2 - 2*kappa*y)D_y'
 
 
-class CheyettePeacemanRachford(CheyetteStepping):
-    # (ru. схема Писмана-Рекфорда)
-    def __init__(self, mesh: Mesh2D, times: List[float], process: CheyetteProcess, product: CheyetteProduct,
+class CheyetteStepping(ABC):
+    def __init__(self, times: np.array, process: CheyetteProcess, product: CheyetteProduct,
                  operator: CheyetteOperator):
-        self.mesh = mesh
         self.times = times
         self.process = process
         self.product = product
         self.operator = operator
 
-        self.tmp_values = [[]]
-        self.x_operator = None
-        self.y_operator = None
-        self.x_rhs = mesh.zeros()
-        self.y_rhs = mesh.zeros()
+        self.tmp_values = np.zeros(self.operator.mesh.shape)
+        self.x_rhs = np.zeros(self.operator.mesh.shape)
+        self.y_rhs = np.zeros(self.operator.mesh.shape)
 
+    @abstractmethod
+    def do_one_step(self, mid_time, old_values, new_values,
+                    x_lower_boundary_values, x_upper_boundary_values,
+                    y_lower_boundary_values, y_upper_boundary_values) -> None:
+        raise NotImplementedError
+
+
+class PeacemanRachford(CheyetteStepping):
     def do_one_step(self, mid_time, old_values, new_values,
                     x_lower_boundary_values, x_upper_boundary_values,
                     y_lower_boundary_values, y_upper_boundary_values) -> None:
         self.operator.evaluate_coefs(mid_time)
 
         self.operator.y_apply(arg=old_values, out=self.x_rhs)
-        self.x_rhs[0, :] = x_lower_boundary_values
-        self.x_rhs[-1, :] = x_upper_boundary_values
+        self.x_rhs[0, :] = x_lower_boundary_values    # lower Dirichlet condition for x
+        self.x_rhs[-1, :] = x_upper_boundary_values   # upper Dirichlet condition for x
         self.operator.x_solve(rhs=self.x_rhs, sol=self.tmp_values)
 
         self.operator.x_apply(arg=self.tmp_values, out=self.y_rhs)
-        self.y_rhs[:, 0] = y_upper_boundary_values
-        self.y_rhs[:, -1] = y_lower_boundary_values
+        self.y_rhs[:, 0] = y_upper_boundary_values    # upper Dirichlet condition for y
+        self.y_rhs[:, -1] = y_lower_boundary_values   # lower Dirichlet condition for y
         self.operator.y_solve(rhs=self.y_rhs, sol=new_values)
+
+
+class CheyetteDirichletBC:
+    def __init__(self, evolution_times: np.array, mesh: Mesh2D, product: CheyetteProduct):
+        self.evolution_times = evolution_times
+        self.mesh = mesh
+        self.product = product
+
+        self.x_lower_boundary_values = np.zeros((len(evolution_times)-1, mesh.shape[1]))
+        self.x_upper_boundary_values = np.zeros((len(evolution_times)-1, mesh.shape[1]))
+        self.y_lower_boundary_values = np.zeros((len(evolution_times)-1, mesh.shape[0]))
+        self.y_upper_boundary_values = np.zeros((len(evolution_times)-1, mesh.shape[0]))
+
+        self.precompute_x_boundary_values()
+        self.precompute_y_boundary_values()
+
+    def precompute_x_boundary_values(self) -> None:
+        # this is more easy for Douglas-Rachford, but evolved for Peaceman-Rachford
+        # we use an approximate boundary value which is exact if the coefs are time-independent
+        # the approximate boundary condition assumes that U ~ V((t[i] + t[i+1]) / 2)
+        x_first = self.mesh.xs[0]
+        x_last = self.mesh.xs[-1]
+        for i, (t1, t2) in enumerate(zip(self.evolution_times, self.evolution_times[1:])):
+            for j, y in enumerate(self.mesh.ys):
+                mid_time = 0.5 * (t1 + t2)
+                self.x_lower_boundary_values[i][j] = self.product.inner_value(mid_time, x_first, y)
+                self.x_upper_boundary_values[i][j] = self.product.inner_value(mid_time, x_last, y)
+
+    def precompute_y_boundary_values(self) -> None:
+        y_first = self.mesh.ys[0]
+        y_last = self.mesh.ys[-1]
+        for i, t in enumerate(self.evolution_times[1:]):
+            for j, x in enumerate(self.mesh.xs):
+                self.y_lower_boundary_values[i][j] = self.product.inner_value(t, x, y_first)
+                self.y_upper_boundary_values[i][j] = self.product.inner_value(t, x, y_last)
+
+    def __repr__(self):
+        return 'x lower: Dirichlet\nx upper: Dirichlet\ny lower: Dirichlet\ny upper: Dirichlet'
+
+
+class CheyetteEngine:
+
+    def __init__(self, valuation_time: float, t_step: float, end_time: float, mesh: Mesh2D, product: CheyetteProduct,
+                 stepping_method: CheyetteStepping):
+        self.t_step = t_step
+        self.evolution_times = np.arange(end_time, -t_step, valuation_time-t_step)
+        self.stepping_method = stepping_method
+        self.mesh = mesh
+        self.product = product
+        self.values = np.array([[product.inner_value(end_time, x, y) for y in mesh.ys] for x in mesh.xs])
+        self.tmp_values = np.array([[0.0 for y in mesh.ys] for x in mesh.xs])
+        self.bc = CheyetteDirichletBC(self.evolution_times, mesh, product)
+
+    def solve(self):
+        for i, (this_time, next_time) in enumerate(zip(self.evolution_times, self.evolution_times[1:])):
+            mid_time = 0.5 * (this_time + next_time)
+            self.stepping_method.do_one_step(mid_time, self.values, self.tmp_values,
+                                             self.bc.x_lower_boundary_values[i], self.bc.x_upper_boundary_values[i],
+                                             self.bc.y_lower_boundary_values[i], self.bc.y_upper_boundary_values[i])
+            self.values[:] = self.tmp_values
+        results = dict()
+        results['PV'] = self.mesh.interpolate(self.values, 0.0, 0.0)
+        return results
+
 
 # Market parameters
 valuation_time = 0.0
 curve = FlatCurve(0.02)
-process = CheyetteVasicekProcess(mean_rev=0.1, local_vol=0.02)
+process = VasicekProcess(curve=curve, mean_rev=0.1, local_vol=0.02)
 
 # Product parameters
 strike = 0.02
 exercise_time = 10
 underlying_times = [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
-product = CheyetteSwaption(strike, exercise_time, underlying_times)
+product = PayerSwaption(process, strike, exercise_time, underlying_times)
 
-# Grid parameters
+# Space grid
 xlim = (-5, 5)
 ylim = (-5, 5)
 xfreq = 50
 yfreq = 10
 mesh = UniformMesh2D(xlim, ylim, xfreq, yfreq)
 
+# Time grid
+t_step = 0.1
+times = np.arange(valuation_time, exercise_time, t_step)
+
+operator = CheyetteOperator(process, mesh, t_step)
+stepping_method = PeacemanRachford(times, process, product, operator)
+engine = CheyetteEngine(valuation_time, t_step, exercise_time, mesh, product, stepping_method)
+
+results = engine.solve()
+print('Pricing results:', results)
+
+# apply_tridiagonal on diagonal matrix
+diag = np.array([1, 2, 3])
+upper = np.array([0, 0])
+lower = np.array([0, 0])
+x = np.array([10, 0.1, 20])
+res = np.array([0.0, 0.0, 0.0])
+true_res = np.array([10, 0.2, 60])
+apply_tridiagonal(lower, diag, upper, x, res)
+print('Testing apply_tridiagonal() on diagonal matrix:', 'passed' if np.allclose(res, true_res) else 'failed')
+
+# apply_tridiagonal on general tridiagonal matrix
+diag = np.array([1, 1, 0])
+upper = np.array([1, 1])
+lower = np.array([0, 2])
+x = [1, 2, 3]
+res = np.array([0.0, 0.0, 0.0])
+apply_tridiagonal(lower, diag, upper, x, res)
+true_res = [3.0, 5.0, 4.0]
+print('Testing apply_tridiagonal() on tridiagonal matrix:', 'passed' if np.allclose(res, true_res) else 'failed')
+
+# solve_tridiagonal on diagonal_matrix
+diag = np.array([1.0, 2, 3])
+upper = np.array([0.0, 0.0])
+upper_tmp = np.array([0.0, 0.0])
+lower = np.array([0.0, 0])
+true_x = np.array([10.0, 0.1, 20])
+y = np.array([10.0, 0.2, 60.0])
+y_tmp = np.array([0.0, 0.0, 0.0])
+
+solve_tridiagonal(lower, diag, upper, upper_tmp, y_tmp, y, x)
+print('Testing solve_tridiagonal() on diagonal matrix:', 'passed' if np.allclose(x, true_x) else 'failed')
+
+# solve_tridiagonal on general tridiagonal matrix
+diag = np.array([1, 1, 0])
+upper = np.array([1, 1])
+lower = np.array([0, 2])
+true_x = [1.0, 2.0, 3.0]
+x = np.array([0.0, 0, 0])
+y = np.array([3.0, 5.0, 4.0])
+y_tmp = np.array([0.0, 0, 0])
+upper_tmp = np.array([0.0, 0])
+solve_tridiagonal(lower, diag, upper, upper_tmp, y_tmp, y, x)
+print('Testing solve_tridiagonal() on tridiagonal matrix:', 'passed' if np.allclose(x, true_x) else 'failed')
