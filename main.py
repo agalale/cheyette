@@ -4,19 +4,16 @@ from math import exp
 import numpy as np
 from bisect import bisect_left
 
-Vector = List[float]
-Matrix = List[List[float]]
-
 
 def apply_tridiagonal(lower: np.array, diag: np.array, upper: np.array, arg: np.array, out: np.array):
     """
         Computes out = A * arg for tridiagonal A
 
-        :lower: lower-diagonal part of A
-        :diag: diagonal part of A
-        :upper: upper-diagonal part of A
-        :arg: argument
-        :out: output
+        :param lower: lower-diagonal part of A
+        :param diag: diagonal part of A
+        :param upper: upper-diagonal part of A
+        :param arg: argument
+        :param out: output
     """
     out[0] = diag[0] * arg[0] + upper[0] * arg[1]
     out[-1] = lower[-1] * arg[-2] + diag[-1] * arg[-1]
@@ -28,13 +25,13 @@ def solve_tridiagonal(lower, diag, upper, upper_tmp, rhs_tmp, rhs, sol):
     """
     solves A * sol = rhs with tridiagonal A
 
-    :lower: (n-1) lower-diagonal part of A
-    :diag: (n) diagonal part of A
-    :upper: (n-1) upper-diagonal part of A
-    :rhs: (n) right-hand-side
-    :sol: (n) solution
-    :rhs_tmp: (n) temporary buffer of the same size as rhs
-    :upper_tmp: (n-1) temporary buffer of the same size as upper
+    :param lower: (n-1) lower-diagonal part of A
+    :param diag: (n) diagonal part of A
+    :param upper: (n-1) upper-diagonal part of A
+    :param rhs: (n) right-hand-side
+    :param sol: (n) solution
+    :param rhs_tmp: (n) temporary buffer of the same size as rhs
+    :param upper_tmp: (n-1) temporary buffer of the same size as upper
 
     implements Thomas algorithm (rus. metod progonki)
     https://en.wikipedia.org/wiki/Tridiagonal_matrix_algorithm
@@ -57,7 +54,16 @@ def solve_tridiagonal(lower, diag, upper, upper_tmp, rhs_tmp, rhs, sol):
         sol[k] = rhs_tmp[k] - upper_tmp[k] * sol[k + 1]
 
 
-def bilin_interp(xs: Vector, ys: Vector, values: Matrix, x: float, y: float) -> float:
+def bilin_interp(xs: np.array, ys: np.array, values: np.array, x: float, y: float) -> float:
+    """
+    Bilinear interpolation
+    :param xs: grid in x direction
+    :param ys: grid in y direction
+    :param values: matrix containing values [[f(x,y) for y in ys] for x in xs]]
+    :param x: x coordinate for interpolation
+    :param y: y coordinate for interpolation
+    :return: bilinearly interpolated value f(x,y)
+    """
     ix = bisect_left(xs, x) - 1
     iy = bisect_left(ys, y) - 1
     x1, x2 = xs[ix:ix+2]
@@ -133,7 +139,7 @@ class CheyetteProcess(ABC):
 
     L = L_x + L_y
     L_x = mu_x * d_x + 0.5 * gamma_x**2 d_x**2 - 0.5 * r
-    L_y = mu_y * d_y
+    L_y = mu_y * d_y - 0.5 * r
     """
     def __init__(self, curve: Curve):
         self.curve = curve
@@ -158,7 +164,7 @@ class CheyetteProcess(ABC):
         raise NotImplementedError
 
     def df(self, t: float, T: float, x: float, y: float) -> float:
-        return self.curve.df(t) * exp(-self.G(t, T) * x - 0.5 * self.G(t, T) ** 2 * y)
+        return self.curve.df(T) / self.curve.df(t) * exp(-self.G(t, T) * x - 0.5 * self.G(t, T) ** 2 * y)
 
     def annuity(self, t: float, x: float, y: float, underlying_times: List[float]) -> float:
         return sum((t2 - t1 ) * self.df(t, t2, x, y)
@@ -192,15 +198,29 @@ class VasicekProcess(CheyetteProcess):
 
 
 class CheyetteProduct(ABC):
+    def __init__(self, process: CheyetteProcess):
+        self.process = process
+
     @abstractmethod
     def inner_value(self, t: float, x: float, y: float) -> float:
         raise NotImplementedError
 
 
+class ZCB(CheyetteProduct):
+    def __init__(self, process: CheyetteProcess, expiry: float):
+        super().__init__(process)
+        self.expiry = expiry
+
+    def inner_value(self, t: float, x: float, y: float) -> float:
+        return self.process.df(t, self.expiry, x, y)
+
+    def __repr__(self):
+        return f'ZCB(expiry={self.expiry:.2f})'
+
 class PayerSwaption(CheyetteProduct):
     def __init__(self, process: CheyetteProcess, strike: float, exercise_time: float,
                  underlying_times: List[float]) -> None:
-        self.process = process
+        super().__init__(process)
         self.strike = strike
         self.exercise_time = exercise_time
         self.underlying_times = underlying_times
@@ -209,7 +229,7 @@ class PayerSwaption(CheyetteProduct):
         return max(self.process.swap_value(t, x, y, self.strike, self.underlying_times), 0)
 
     def __repr__(self):
-        return f'PayerSwaption(strike={strike:.2f}, exercise_time={exercise_time:.2f}, underlying_times={self.underlying_times})'
+        return f'PayerSwaption(strike={self.strike:.2f}, exercise_time={self.exercise_time:.2f}, underlying_times={self.underlying_times})'
 
 
 class CheyetteOperator:
@@ -239,14 +259,16 @@ class CheyetteOperator:
         self.y_upper_diag_tmp = np.zeros((mesh.shape[0], mesh.shape[1]-1))
         self.y_rhs_tmp = np.zeros(mesh.shape)
 
-    def evaluate_coefs(self, t: float) -> None:
+    def evaluate_coefs(self, t: float, x_mult: float, y_mult: float) -> None:
         """
             Evaluate coefficients of the tridiagonal operators
-              A_x = Id - 0.5 * dt * L_x
-              A_y = Id + 0.5 * dt * L_y
+              A_x = Id + x_mult * dt * L_x
+              A_y = Id + y_mult * dt * L_y
             where L_x, L_y are the tridiagonal operators:
-              L_x = mu_x * D_x + 0.5 * gamma**2 * D_x**2
-              L_y = my_u * D_y
+              L_x = mu_x * D_x + 0.5 * gamma**2 * D_x**2 - 0.5 r
+              L_y = my_u * D_y - 0.5 r
+
+            Central difference is used for D_x, D_y, D_x**2, D_y**2
         """
         self.mu_x[:] = np.array([[self.process.mu_x(t, x, y) for y in self.mesh.ys] for x in self.mesh.xs])
         self.mu_y[:] = np.array([[self.process.mu_y(t, x, y) for y in self.mesh.ys] for x in self.mesh.xs])
@@ -255,14 +277,14 @@ class CheyetteOperator:
 
         # Operator A_x = I - 0.5 * dt * L_x
         txx_ratio = self.t_step / (self.mesh.x_step**2)
-        self.x_upper_diag[:] = - 0.25 * txx_ratio * (self.gamma_x_squared[:-1] + self.mesh.x_step * self.mu_x[:-1])
-        self.x_lower_diag[:] = - 0.25 * txx_ratio * (self.gamma_x_squared[1:] - self.mesh.x_step * self.mu_x[1:])
-        self.x_diag[:] = 1 - 0.5 * txx_ratio * (self.gamma_x_squared + 0.5 * self.mesh.x_step**2 * self.r)
+        self.x_upper_diag[:] = x_mult * 0.5 * txx_ratio * (self.gamma_x_squared[:-1] + self.mesh.x_step * self.mu_x[:-1])
+        self.x_lower_diag[:] = x_mult * 0.5 * txx_ratio * (self.gamma_x_squared[1:] - self.mesh.x_step * self.mu_x[1:])
+        self.x_diag[:] = 1 - x_mult * txx_ratio * (self.gamma_x_squared + 0.5 * self.mesh.x_step**2 * self.r)
 
         # Operator A_y = I + 0.5 * dt * L_y
-        self.y_upper_diag[:] = 0.25 * self.t_step / self.mesh.y_step * self.mu_y.T[:-1].T
-        self.y_lower_diag[:] = - 0.25 * self.t_step / self.mesh.y_step * self.mu_y.T[1:].T
-        self.y_diag[:] = 1 + 0.25 * self.t_step * self.r
+        self.y_upper_diag[:] = y_mult * 0.5 * self.t_step / self.mesh.y_step * self.mu_y.T[:-1].T
+        self.y_lower_diag[:] = - y_mult * 0.5 * self.t_step / self.mesh.y_step * self.mu_y.T[1:].T
+        self.y_diag[:] = 1 - y_mult * 0.5 * self.t_step * self.r
 
         # Dirichlet boundary condition for x
         self.x_diag[0, :] = np.ones(self.mesh.shape[1])
@@ -321,13 +343,14 @@ class PeacemanRachford(CheyetteStepping):
     def do_one_step(self, mid_time, old_values, new_values,
                     x_lower_boundary_values, x_upper_boundary_values,
                     y_lower_boundary_values, y_upper_boundary_values) -> None:
-        self.operator.evaluate_coefs(mid_time)
 
+        self.operator.evaluate_coefs(mid_time, x_mult=-0.5, y_mult=0.5)
         self.operator.y_apply(arg=old_values, out=self.x_rhs)
         self.x_rhs[0, :] = x_lower_boundary_values    # lower Dirichlet condition for x
         self.x_rhs[-1, :] = x_upper_boundary_values   # upper Dirichlet condition for x
         self.operator.x_solve(rhs=self.x_rhs, sol=self.tmp_values)
 
+        self.operator.evaluate_coefs(mid_time, x_mult=0.5, y_mult=-0.5)
         self.operator.x_apply(arg=self.tmp_values, out=self.y_rhs)
         self.y_rhs[:, 0] = y_upper_boundary_values    # upper Dirichlet condition for y
         self.y_rhs[:, -1] = y_lower_boundary_values   # lower Dirichlet condition for y
@@ -386,86 +409,17 @@ class CheyetteEngine:
         self.bc = CheyetteDirichletBC(self.evolution_times, mesh, product)
 
     def solve(self):
+        full_solution = np.zeros((len(self.evolution_times), *self.mesh.shape))
+        full_solution[0, ...] = self.values
         for i, (this_time, next_time) in enumerate(zip(self.evolution_times, self.evolution_times[1:])):
             mid_time = 0.5 * (this_time + next_time)
             self.stepping_method.do_one_step(mid_time, self.values, self.tmp_values,
                                              self.bc.x_lower_boundary_values[i], self.bc.x_upper_boundary_values[i],
                                              self.bc.y_lower_boundary_values[i], self.bc.y_upper_boundary_values[i])
             self.values[:] = self.tmp_values
+            full_solution[i+1, ...] = self.values
         results = dict()
         results['PV'] = self.mesh.interpolate(self.values, 0.0, 0.0)
+        results['EvolutionTimes'] = self.evolution_times
+        results['FullSolution'] = full_solution
         return results
-
-
-# Market parameters
-valuation_time = 0.0
-curve = FlatCurve(0.02)
-process = VasicekProcess(curve=curve, mean_rev=0.1, local_vol=0.02)
-
-# Product parameters
-strike = 0.02
-exercise_time = 10
-underlying_times = [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
-product = PayerSwaption(process, strike, exercise_time, underlying_times)
-
-# Space grid
-xlim = (-5, 5)
-ylim = (-5, 5)
-xfreq = 50
-yfreq = 10
-mesh = UniformMesh2D(xlim, ylim, xfreq, yfreq)
-
-# Time grid
-t_step = 0.1
-times = np.arange(valuation_time, exercise_time, t_step)
-
-operator = CheyetteOperator(process, mesh, t_step)
-stepping_method = PeacemanRachford(times, process, product, operator)
-engine = CheyetteEngine(valuation_time, t_step, exercise_time, mesh, product, stepping_method)
-
-results = engine.solve()
-print('Pricing results:', results)
-
-# apply_tridiagonal on diagonal matrix
-diag = np.array([1, 2, 3])
-upper = np.array([0, 0])
-lower = np.array([0, 0])
-x = np.array([10, 0.1, 20])
-res = np.array([0.0, 0.0, 0.0])
-true_res = np.array([10, 0.2, 60])
-apply_tridiagonal(lower, diag, upper, x, res)
-print('Testing apply_tridiagonal() on diagonal matrix:', 'passed' if np.allclose(res, true_res) else 'failed')
-
-# apply_tridiagonal on general tridiagonal matrix
-diag = np.array([1, 1, 0])
-upper = np.array([1, 1])
-lower = np.array([0, 2])
-x = [1, 2, 3]
-res = np.array([0.0, 0.0, 0.0])
-apply_tridiagonal(lower, diag, upper, x, res)
-true_res = [3.0, 5.0, 4.0]
-print('Testing apply_tridiagonal() on tridiagonal matrix:', 'passed' if np.allclose(res, true_res) else 'failed')
-
-# solve_tridiagonal on diagonal_matrix
-diag = np.array([1.0, 2, 3])
-upper = np.array([0.0, 0.0])
-upper_tmp = np.array([0.0, 0.0])
-lower = np.array([0.0, 0])
-true_x = np.array([10.0, 0.1, 20])
-y = np.array([10.0, 0.2, 60.0])
-y_tmp = np.array([0.0, 0.0, 0.0])
-
-solve_tridiagonal(lower, diag, upper, upper_tmp, y_tmp, y, x)
-print('Testing solve_tridiagonal() on diagonal matrix:', 'passed' if np.allclose(x, true_x) else 'failed')
-
-# solve_tridiagonal on general tridiagonal matrix
-diag = np.array([1, 1, 0])
-upper = np.array([1, 1])
-lower = np.array([0, 2])
-true_x = [1.0, 2.0, 3.0]
-x = np.array([0.0, 0, 0])
-y = np.array([3.0, 5.0, 4.0])
-y_tmp = np.array([0.0, 0, 0])
-upper_tmp = np.array([0.0, 0])
-solve_tridiagonal(lower, diag, upper, upper_tmp, y_tmp, y, x)
-print('Testing solve_tridiagonal() on tridiagonal matrix:', 'passed' if np.allclose(x, true_x) else 'failed')
