@@ -1,0 +1,25 @@
+figure.figsize : 8.0, 4.5
+
+lines.markeredgecolor: k
+lines.linewidth : 3
+
+axes.prop_cycle : cycler(color='brgcmkybrgc', linestyle=['--','-.',':','-','-','-.',':','-','-.',':',':'], marker=['o','s','^','>','o','v','D','^','<','D','x'])
+axes.grid : True
+axes.labelweight : bold
+axes.titleweight : bold
+axes.titlesize : 20
+axes.labelpad : 10
+axes.xmargin : 0
+axes.ymargin : 0.1
+axes.labelsize : 15
+axes.formatter.useoffset : False
+
+grid.linestyle : dotted
+xtick.labelsize : 12
+ytick.labelsize : 12
+
+legend.numpoints : 2
+legend.framealpha : 1
+legend.fontsize : 13
+
+savefig.bbox : tight

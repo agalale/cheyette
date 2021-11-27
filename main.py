@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 from typing import List, Tuple, Callable
 from math import exp
 import numpy as np
+from scipy.stats import norm
 from bisect import bisect_left
 
 
@@ -97,6 +98,9 @@ class FlatCurve(Curve):
     def fwd(self, t1: float, t2: float) -> float:
         return self.rate
 
+    def __repr__(self):
+        return f'FlatCurve({self.rate})'
+
 
 class Mesh2D(ABC):
     def __init__(self) -> None:
@@ -120,13 +124,15 @@ class Mesh2D(ABC):
 
 
 class UniformMesh2D(Mesh2D):
-    def __init__(self, xlim: Tuple[float, float], ylim: Tuple[float, float], x_freq: int, y_freq: int) -> None:
+    def __init__(self, x_grid_stddevs, y_grid_stddevs, x_grid_center, y_grid_center,
+                 x_grid_stddev, y_grid_stddev, x_freq, y_freq) -> None:
         super().__init__()
-        self.xs = np.linspace(xlim[0], xlim[1], x_freq)
-        self.ys = np.linspace(ylim[0], ylim[1], y_freq)
-
-        self.x_step = self.xs[1] - self.xs[0]
-        self.y_step = self.ys[1] - self.ys[0]
+        x_lim = (x_grid_center - x_grid_stddevs * x_grid_stddev, x_grid_center + x_grid_stddevs * x_grid_stddev)
+        y_lim = (y_grid_center - y_grid_stddevs * y_grid_stddev, y_grid_center + y_grid_stddevs * y_grid_stddev)
+        self.x_step = x_grid_stddev / x_freq
+        self.y_step = y_grid_stddev / y_freq
+        self.xs = np.arange(x_lim[0], x_lim[1] + self.x_step, self.x_step)
+        self.ys = np.arange(y_lim[0], y_lim[1] + self.y_step, self.y_step)
 
     def __repr__(self):
         return f'UniformMesh(xs=[{self.xs[0]:.2f},{self.xs[1]:.2f}..{self.xs[-1]:.2f}], ys=[{self.ys[0]:.2f},{self.ys[1]:.2f}..{self.ys[-1]:.2f}])'
@@ -184,7 +190,7 @@ class VasicekProcess(CheyetteProcess):
     def mu_x(self, t: float, x: float, y: float) -> float:
         return y - self.mean_rev * x
 
-    def gamma_x(self, t: float, x: float, y:float) -> float:
+    def gamma_x(self, t: float, x: float, y: float) -> float:
         return self.local_vol
 
     def mu_y(self, t: float, x: float, y: float) -> float:
@@ -194,7 +200,9 @@ class VasicekProcess(CheyetteProcess):
         return (1 - np.exp(-self.mean_rev * (T - t))) / self.mean_rev
 
     def __repr__(self):
-        return f'dx[t] = (y[t] - kappa*x[t])dt + sigma*dW[t]\ndy[t] = (sigma**2 - 2*kappa*y[t])dt\nkappa={self.mean_rev}, sigma={self.local_vol}'
+        return f'dx[t] = (y[t] - kappa*x[t])dt + sigma*dW[t]\n' \
+               f'dy[t] = (sigma**2 - 2*kappa*y[t])dt\n' \
+               f'kappa={self.mean_rev}, sigma={self.local_vol}'
 
 
 class CheyetteProduct(ABC):
@@ -202,7 +210,7 @@ class CheyetteProduct(ABC):
         self.process = process
 
     @abstractmethod
-    def inner_value(self, t: float, x: float, y: float) -> float:
+    def intrinsic_value(self, t: float, x: float, y: float) -> float:
         raise NotImplementedError
 
 
@@ -211,11 +219,27 @@ class ZCB(CheyetteProduct):
         super().__init__(process)
         self.expiry = expiry
 
-    def inner_value(self, t: float, x: float, y: float) -> float:
+    def intrinsic_value(self, t: float, x: float, y: float) -> float:
         return self.process.df(t, self.expiry, x, y)
 
     def __repr__(self):
         return f'ZCB(expiry={self.expiry:.2f})'
+
+
+class ZCBCall(CheyetteProduct):
+    def __init__(self, process: CheyetteProcess, strike: float, exercise_time: float, bond_expiry: float) -> None:
+        super().__init__(process)
+        self.strike = strike
+        self.exercise_time = exercise_time
+        self.bond_expiry = bond_expiry
+
+    def intrinsic_value(self, t: float, x: float, y: float):
+        return max(self.process.df(t, self.bond_expiry, x, y)
+                   - self.process.df(t, self.exercise_time, x, y) * self.strike, 0.0)
+
+    def __repr__(self):
+        return f'ZCBCall(strike={self.strike}, exercise_time={self.exercise_time}, bond_expiry={self.bond_expiry})'
+
 
 class PayerSwaption(CheyetteProduct):
     def __init__(self, process: CheyetteProcess, strike: float, exercise_time: float,
@@ -225,16 +249,15 @@ class PayerSwaption(CheyetteProduct):
         self.exercise_time = exercise_time
         self.underlying_times = underlying_times
 
-    def inner_value(self, t: float, x: float, y: float) -> float:
-        return max(self.process.swap_value(t, x, y, self.strike, self.underlying_times), 0)
+    def intrinsic_value(self, t: float, x: float, y: float) -> float:
+        return max(self.process.swap_value(t, x, y, self.strike, self.underlying_times), 0.0)
 
     def __repr__(self):
         return f'PayerSwaption(strike={self.strike:.2f}, exercise_time={self.exercise_time:.2f}, underlying_times={self.underlying_times})'
 
 
 class CheyetteOperator:
-    def __init__(self, process: CheyetteProcess, mesh: UniformMesh2D, t_step: float):
-        self.t_step = t_step
+    def __init__(self, process: CheyetteProcess, mesh: UniformMesh2D):
         self.process = process
         self.mesh = mesh
         self.shape = mesh.shape
@@ -259,7 +282,7 @@ class CheyetteOperator:
         self.y_upper_diag_tmp = np.zeros((mesh.shape[0], mesh.shape[1]-1))
         self.y_rhs_tmp = np.zeros(mesh.shape)
 
-    def evaluate_coefs(self, t: float, x_mult: float, y_mult: float) -> None:
+    def evaluate_coefs(self, t: float, t_step: float, x_mult: float, y_mult: float) -> None:
         """
             Evaluate coefficients of the tridiagonal operators
               A_x = Id + x_mult * dt * L_x
@@ -276,15 +299,15 @@ class CheyetteOperator:
         self.r[:] = np.array([[self.process.r(t, x) for _ in self.mesh.ys] for x in self.mesh.xs])
 
         # Operator A_x = I - 0.5 * dt * L_x
-        txx_ratio = self.t_step / (self.mesh.x_step**2)
+        txx_ratio = t_step / (self.mesh.x_step**2)
         self.x_upper_diag[:] = x_mult * 0.5 * txx_ratio * (self.gamma_x_squared[:-1] + self.mesh.x_step * self.mu_x[:-1])
         self.x_lower_diag[:] = x_mult * 0.5 * txx_ratio * (self.gamma_x_squared[1:] - self.mesh.x_step * self.mu_x[1:])
         self.x_diag[:] = 1 - x_mult * txx_ratio * (self.gamma_x_squared + 0.5 * self.mesh.x_step**2 * self.r)
 
         # Operator A_y = I + 0.5 * dt * L_y
-        self.y_upper_diag[:] = y_mult * 0.5 * self.t_step / self.mesh.y_step * self.mu_y.T[:-1].T
-        self.y_lower_diag[:] = - y_mult * 0.5 * self.t_step / self.mesh.y_step * self.mu_y.T[1:].T
-        self.y_diag[:] = 1 - y_mult * 0.5 * self.t_step * self.r
+        self.y_upper_diag[:] = y_mult * 0.5 * t_step / self.mesh.y_step * self.mu_y.T[:-1].T
+        self.y_lower_diag[:] = - y_mult * 0.5 * t_step / self.mesh.y_step * self.mu_y.T[1:].T
+        self.y_diag[:] = 1 - y_mult * 0.5 * t_step * self.r
 
         # Dirichlet boundary condition for x
         self.x_diag[0, :] = np.ones(self.mesh.shape[1])
@@ -317,15 +340,14 @@ class CheyetteOperator:
             apply_tridiagonal(self.y_lower_diag[i, :], self.y_diag[i, :], self.y_upper_diag[i, :], arg[i, :], out[i, :])
 
     def __repr__(self):
-        return f'A_x = Id - 0.5 * t_step * L_x\nA_y = Id - 0.5 * t_step * L_y\nL_x = (y-kappa * x) * D_x + 0.5*sigma**2 * D_x**2 - (x+f(0,t))\nL_y = (sigma**2 - 2*kappa*y)D_y'
+        return f'A_x = Id - 0.5 * t_step * L_x\n' \
+               f'A_y = Id - 0.5 * t_step * L_y\n' \
+               f'L_x = (y-kappa * x) * D_x + 0.5*sigma**2 * D_x**2 - 0.5(x+f(0,t))\n' \
+               f'L_y = (sigma**2 - 2*kappa*y)D_y - 0.5*(x+f(0,t))'
 
 
 class CheyetteStepping(ABC):
-    def __init__(self, times: np.array, process: CheyetteProcess, product: CheyetteProduct,
-                 operator: CheyetteOperator):
-        self.times = times
-        self.process = process
-        self.product = product
+    def __init__(self, operator: CheyetteOperator):
         self.operator = operator
 
         self.tmp_values = np.zeros(self.operator.mesh.shape)
@@ -333,24 +355,24 @@ class CheyetteStepping(ABC):
         self.y_rhs = np.zeros(self.operator.mesh.shape)
 
     @abstractmethod
-    def do_one_step(self, mid_time, old_values, new_values,
+    def do_one_step(self, mid_time, t_step, old_values, new_values,
                     x_lower_boundary_values, x_upper_boundary_values,
                     y_lower_boundary_values, y_upper_boundary_values) -> None:
         raise NotImplementedError
 
 
 class PeacemanRachford(CheyetteStepping):
-    def do_one_step(self, mid_time, old_values, new_values,
+    def do_one_step(self, mid_time, t_step, old_values, new_values,
                     x_lower_boundary_values, x_upper_boundary_values,
                     y_lower_boundary_values, y_upper_boundary_values) -> None:
 
-        self.operator.evaluate_coefs(mid_time, x_mult=-0.5, y_mult=0.5)
+        self.operator.evaluate_coefs(mid_time, t_step, x_mult=-0.5, y_mult=0.5)
         self.operator.y_apply(arg=old_values, out=self.x_rhs)
         self.x_rhs[0, :] = x_lower_boundary_values    # lower Dirichlet condition for x
         self.x_rhs[-1, :] = x_upper_boundary_values   # upper Dirichlet condition for x
         self.operator.x_solve(rhs=self.x_rhs, sol=self.tmp_values)
 
-        self.operator.evaluate_coefs(mid_time, x_mult=0.5, y_mult=-0.5)
+        self.operator.evaluate_coefs(mid_time, t_step, x_mult=0.5, y_mult=-0.5)
         self.operator.x_apply(arg=self.tmp_values, out=self.y_rhs)
         self.y_rhs[:, 0] = y_upper_boundary_values    # upper Dirichlet condition for y
         self.y_rhs[:, -1] = y_lower_boundary_values   # lower Dirichlet condition for y
@@ -380,40 +402,46 @@ class CheyetteDirichletBC:
         for i, (t1, t2) in enumerate(zip(self.evolution_times, self.evolution_times[1:])):
             for j, y in enumerate(self.mesh.ys):
                 mid_time = 0.5 * (t1 + t2)
-                self.x_lower_boundary_values[i][j] = self.product.inner_value(mid_time, x_first, y)
-                self.x_upper_boundary_values[i][j] = self.product.inner_value(mid_time, x_last, y)
+                self.x_lower_boundary_values[i][j] = self.product.intrinsic_value(mid_time, x_first, y)
+                self.x_upper_boundary_values[i][j] = self.product.intrinsic_value(mid_time, x_last, y)
 
     def precompute_y_boundary_values(self) -> None:
         y_first = self.mesh.ys[0]
         y_last = self.mesh.ys[-1]
         for i, t in enumerate(self.evolution_times[1:]):
             for j, x in enumerate(self.mesh.xs):
-                self.y_lower_boundary_values[i][j] = self.product.inner_value(t, x, y_first)
-                self.y_upper_boundary_values[i][j] = self.product.inner_value(t, x, y_last)
+                self.y_lower_boundary_values[i][j] = self.product.intrinsic_value(t, x, y_first)
+                self.y_upper_boundary_values[i][j] = self.product.intrinsic_value(t, x, y_last)
 
     def __repr__(self):
         return 'x lower: Dirichlet\nx upper: Dirichlet\ny lower: Dirichlet\ny upper: Dirichlet'
 
 
 class CheyetteEngine:
+    @abstractmethod
+    def price(self):
+        raise NotImplementedError
 
-    def __init__(self, valuation_time: float, t_step: float, end_time: float, mesh: Mesh2D, product: CheyetteProduct,
+
+class CheyettePDEEngine(CheyetteEngine):
+
+    def __init__(self, valuation_time: float, t_step: float, end_time: float, product: CheyetteProduct,
                  stepping_method: CheyetteStepping):
         self.t_step = t_step
         self.evolution_times = np.arange(end_time, -t_step, valuation_time-t_step)
         self.stepping_method = stepping_method
-        self.mesh = mesh
+        self.mesh = stepping_method.operator.mesh
         self.product = product
-        self.values = np.array([[product.inner_value(end_time, x, y) for y in mesh.ys] for x in mesh.xs])
-        self.tmp_values = np.array([[0.0 for y in mesh.ys] for x in mesh.xs])
-        self.bc = CheyetteDirichletBC(self.evolution_times, mesh, product)
+        self.values = np.array([[product.intrinsic_value(end_time, x, y) for y in self.mesh.ys] for x in self.mesh.xs])
+        self.tmp_values = np.array([[0.0 for y in self.mesh.ys] for x in self.mesh.xs])
+        self.bc = CheyetteDirichletBC(self.evolution_times, self.mesh, product)
 
-    def solve(self):
+    def price(self):
         full_solution = np.zeros((len(self.evolution_times), *self.mesh.shape))
         full_solution[0, ...] = self.values
         for i, (this_time, next_time) in enumerate(zip(self.evolution_times, self.evolution_times[1:])):
             mid_time = 0.5 * (this_time + next_time)
-            self.stepping_method.do_one_step(mid_time, self.values, self.tmp_values,
+            self.stepping_method.do_one_step(mid_time, self.t_step, self.values, self.tmp_values,
                                              self.bc.x_lower_boundary_values[i], self.bc.x_upper_boundary_values[i],
                                              self.bc.y_lower_boundary_values[i], self.bc.y_upper_boundary_values[i])
             self.values[:] = self.tmp_values
@@ -422,4 +450,35 @@ class CheyetteEngine:
         results['PV'] = self.mesh.interpolate(self.values, 0.0, 0.0)
         results['EvolutionTimes'] = self.evolution_times
         results['FullSolution'] = full_solution
+        return results
+
+
+class CheyetteAnalyticEngine(CheyetteEngine):
+    def __init__(self, valuation_time: float, product: CheyetteProduct):
+        self.valuation_time = valuation_time
+        self.product = product
+
+    def price(self):
+        results = dict()
+        if isinstance(self.product, ZCBCall):
+            if isinstance(self.product.process, VasicekProcess):
+                k = self.product.process.mean_rev
+                s = self.product.process.local_vol
+                S = self.product.exercise_time
+                T = self.product.bond_expiry
+                K = self.product.strike
+                B_T = self.product.process.curve.df(T)
+                B_S = self.product.process.curve.df(S)
+                nu = s**2 / (2*k**3) * (1 - np.exp(-k*(T-S)))**2 * (1 - np.exp(-2*k*S))
+                d_plus = (np.log(B_T / (K*B_S)) + 0.5 * nu)/np.sqrt(nu)
+                d_minus = d_plus - np.sqrt(nu)
+                results['PV'] = B_T * norm.cdf(d_plus) - K * B_S * norm.cdf(d_minus)
+
+            else:
+                raise Exception(f'Analytic engine can\'t be used to price ZCB when '
+                                + f'the underlying process is {self.product.process.__class__}')
+
+        else:
+            raise Exception(f'Product {self.product.__class__} is not supported by the analytic engine')
+
         return results
