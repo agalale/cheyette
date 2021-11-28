@@ -1,7 +1,12 @@
 import numpy as np
-from main import apply_tridiagonal, solve_tridiagonal
-from main import FlatCurve, VasicekProcess, UniformMesh2D, ZCB, CheyetteOperator, PeacemanRachford, CheyettePDEEngine
-from main import ZCBCall, CheyetteAnalyticEngine
+from cheyette.utils import apply_tridiagonal, solve_tridiagonal
+from cheyette.curves import FlatCurve
+from cheyette.processes import VasicekProcess
+from cheyette.products import ZCB
+from cheyette.discretization import PeacemanRachford
+from cheyette.models import CheyettePDEModel
+from cheyette.boundary_conditions import DirichletIntrinsicBC
+from cheyette.pricers import CheyettePricer
 
 # apply_tridiagonal on diagonal matrix
 diag = np.array([1, 2, 3])
@@ -47,43 +52,22 @@ upper_tmp = np.array([0.0, 0])
 solve_tridiagonal(lower, diag, upper, upper_tmp, y_tmp, y, x)
 print('Testing solve_tridiagonal() on tridiagonal matrix:', 'passed' if np.allclose(x, true_x) else 'failed')
 
-
 # Pricing a zero coupon bond
-valuation_time = 0.0
-curve = FlatCurve(0.1)
-local_vol = 0.02
-expiry = 1.0
-process = VasicekProcess(curve=curve, mean_rev=0.1, local_vol=local_vol)
+curve = FlatCurve(0.02)
+process = VasicekProcess(mean_rev=0.10, local_vol=0.02)
+model_pde = CheyettePDEModel(x_grid_stddevs=1, y_grid_stddevs=1,
+                             x_freq=10, y_freq=10, t_freq=10,
+                             stepping_method=PeacemanRachford(),
+                             x_lower_bc=DirichletIntrinsicBC(),
+                             x_upper_bc=DirichletIntrinsicBC(),
+                             y_lower_bc=DirichletIntrinsicBC(),
+                             y_upper_bc=DirichletIntrinsicBC())
+product = ZCB(expiry=1.0)
+pricer_pde = CheyettePricer(model_pde, curve, process, product, valuation_time=0.0)
 
-# Space grid
-x_grid_stddevs = 1
-y_grid_stddevs = 1
-x_grid_center = 0
-y_grid_center = 0
-x_grid_stddev = 1
-y_grid_stddev = 1
-x_freq = 100
-y_freq = 50
-
-mesh = UniformMesh2D(x_grid_stddevs, y_grid_stddevs,
-                       x_grid_center, y_grid_center,
-                       x_grid_stddev, y_grid_stddev,
-                       x_freq, y_freq)
-
-# Time grid
-t_step = 0.1
-
-# Product
-product = ZCB(process, expiry)
-times = np.arange(valuation_time, expiry, t_step)
-
-operator = CheyetteOperator(process, mesh)
-stepping_method = PeacemanRachford(operator)
-pde_engine = CheyettePDEEngine(valuation_time, t_step, expiry, product, stepping_method)
-
-results = pde_engine.price()
+results = pricer_pde.price()
 print('Testing pricing of a zero coupon bond ZCB')
 print('    PDE PV:', results['PV'])
-print('    Analytic PV:', curve.df(expiry))
-print(f"    Abs. Error: {results['PV'] - curve.df(expiry)}")
-print(f"    Rel. Error', {(results['PV'] - curve.df(expiry))/results['PV']:.2e}")
+print('    Analytic PV:', curve.df(product.expiry))
+print(f"    Abs. Error: {results['PV'] - curve.df(product.expiry):.2e}")
+print(f"    Rel. Error', {(results['PV'] - curve.df(product.expiry)) / results['PV']:.2e}")
