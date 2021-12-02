@@ -1,7 +1,6 @@
 from abc import ABC, abstractmethod
 import numpy as np
 from cheyette.curves import Curve
-from cheyette.utils import FloatRefObs, Observable
 
 
 class CheyetteProcess(ABC):
@@ -24,9 +23,6 @@ class CheyetteProcess(ABC):
     @abstractmethod
     def mu_y(self, t: float, x: float, y: float) -> float:
         raise NotImplementedError
-
-    def r(self, curve: Curve, t: float, x: float):
-        return curve.fwd(0, t) + x
 
     @abstractmethod
     def G(self, t: float, T: float):
@@ -59,23 +55,36 @@ class CheyetteProcess(ABC):
     def y_stddev(self, t: float):
         raise NotImplementedError
 
+    @abstractmethod
+    def r(self, curve: Curve, t: float, x: float):
+        raise NotImplementedError
 
-class VasicekProcess(CheyetteProcess):
-    def __init__(self, mean_rev: float, local_vol: float):
+
+class ConstMeanRevProcess(CheyetteProcess):
+    def __init__(self, mean_rev: float):
         self.mean_rev = mean_rev
-        self.local_vol = local_vol  # Normal local vol
+
+    def G(self, t: float, T: float):
+        return (1 - np.exp(-self.mean_rev * (T - t))) / self.mean_rev
+
+    def mu_y(self, t: float, x: float, y: float) -> float:
+        return self.gamma_x(t, x, y) ** 2 - 2 * self.mean_rev * y
+
+
+class VasicekProcess(ConstMeanRevProcess):
+    """
+        dx[t] = (y[t] - mean_rev * y[t])*dt + local_vol * dW[t]
+        dy[t] = (local_vol**2 - 2 * mean-rev * y[t]) * dt
+    """
+    def __init__(self, mean_rev: float, local_vol: float):
+        ConstMeanRevProcess.__init__(self, mean_rev)
+        self.local_vol = local_vol
 
     def mu_x(self, t: float, x: float, y: float) -> float:
         return y - self.mean_rev * x
 
     def gamma_x(self, t: float, x: float, y: float) -> float:
         return self.local_vol
-
-    def mu_y(self, t: float, x: float, y: float) -> float:
-        return self.local_vol ** 2 - 2 * self.mean_rev * y
-
-    def G(self, t: float, T: float):
-        return (1 - np.exp(-self.mean_rev * (T - t))) / self.mean_rev
 
     def x_mean(self, t: float):
         return 0.5 * self.local_vol**2 * t**2
@@ -88,6 +97,10 @@ class VasicekProcess(CheyetteProcess):
 
     def y_stddev(self, t: float):
         return 0.0
+
+    @classmethod
+    def r(cls, curve: Curve, t: float, x: float):
+        return curve.fwd(0, t) + x
 
     def __repr__(self):
         return f'dx[t] = (y[t] - kappa*x[t])dt + sigma*dW[t]\n' \
@@ -102,3 +115,39 @@ class VasicekProcess(CheyetteProcess):
             self.mean_rev = value
             return self
         raise Exception(f'Attribute {key} does not exist for {self.__class__}')
+
+
+class QuadraticAnnuityProcess(ConstMeanRevProcess):
+    """
+    dx[t] = mu(t, x, y) dt + sigma(t, x, y) dW[t]
+    dy[t] = (sigma(t, x, y) ** 2 - 2 * k * y[t]) * dt
+    sigma(t, x, y) = a + b * x + c * x ^ 2
+    """
+    def __init__(self, mean_rev: float, a: float, b: float, c: float):
+        ConstMeanRevProcess.__init__(self, mean_rev)
+        self.a = a
+        self.b = b
+        self.c = c
+
+    def mu_x(self, t: float, x: float, y: float) -> float:
+        return - self.mean_rev * x
+
+    def gamma_x(self, t: float, x: float, y:float) -> float:
+        return self.a + self.b * x + self.c * x ** 2
+
+    @classmethod
+    def r(cls, curve: Curve, t: float, x: float):
+        return 0.0
+
+    def x_mean(self, t: float):
+        return 0.5 * self.a**2 * t**2
+
+    def y_mean(self, t: float):
+        return self.a ** 2 * t
+
+    def x_stddev(self, t: float):
+        return self.a * np.sqrt(t)
+
+    def y_stddev(self, t: float):
+        return 0.0
+

@@ -11,6 +11,12 @@ class Curve(ABC):
     def fwd(self, t1: float, t2: float) -> float:
         raise NotImplementedError
 
+    def annuity(self, underlying_times: np.array):
+        return sum((t2 - t1) * self.df(t2) for t1, t2 in zip(underlying_times, underlying_times[1:]))
+
+    def swap_rate(self, underlying_times: np.array):
+        return (self.df(underlying_times[0]) - self.df(underlying_times[-1])) / self.annuity(underlying_times)
+
 
 class FlatCurve(Curve):
     def __init__(self, short_rate: float) -> None:
