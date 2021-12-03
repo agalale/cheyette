@@ -29,7 +29,7 @@ class FlatCurve(Curve):
         return self.short_rate
 
     def __repr__(self):
-        return f'FlatCurve({self.short_rate})'
+        return f'FlatCurve({self.short_rate:.4f})'
 
     def set(self, key, value):
         if key == 'short_rate':

@@ -87,13 +87,13 @@ class VasicekProcess(ConstMeanRevProcess):
         return self.local_vol
 
     def x_mean(self, t: float):
-        return 0.5 * self.local_vol**2 * t**2
+        return self.local_vol ** 2 / (2 * self.mean_rev ** 2) * (1 - np.exp(-self.mean_rev * t)) ** 2
 
     def y_mean(self, t: float):
-        return self.local_vol ** 2 * t
+        return self.local_vol ** 2 / (2 * self.mean_rev) * (1 - np.exp(-2 * self.mean_rev * t))
 
     def x_stddev(self, t: float):
-        return self.local_vol * np.sqrt(t)
+        return np.sqrt(self.local_vol ** 2 / (2 * self.mean_rev) * (1 - np.exp(-2 * self.mean_rev * t)))
 
     def y_stddev(self, t: float):
         return 0.0
@@ -103,7 +103,8 @@ class VasicekProcess(ConstMeanRevProcess):
         return curve.fwd(0, t) + x
 
     def __repr__(self):
-        return f'dx[t] = (y[t] - kappa*x[t])dt + sigma*dW[t]\n' \
+        return f'Stationary Hull-White process' \
+               f'dx[t] = (y[t] - kappa*x[t])dt + sigma*dW[t]\n' \
                f'dy[t] = (sigma**2 - 2*kappa*y[t])dt\n' \
                f'kappa={self.mean_rev}, sigma={self.local_vol}'
 
@@ -115,6 +116,47 @@ class VasicekProcess(ConstMeanRevProcess):
             self.mean_rev = value
             return self
         raise Exception(f'Attribute {key} does not exist for {self.__class__}')
+
+
+class QuadraticProcess(ConstMeanRevProcess):
+        """
+            dx[t] = (y[t] - mean_rev * y[t])*dt + sigma(x[t]) * dW[t]
+            dy[t] = (sigma(x[t])**2 - 2 * mean-rev * y[t]) * dt
+            sigma(x) = a + b * x + c * x**2
+        """
+
+        def __init__(self, mean_rev: float, a: float, b: float, c: float):
+            ConstMeanRevProcess.__init__(self, mean_rev)
+            self.a = a
+            self.b = b
+            self.c = c
+
+        def mu_x(self, t: float, x: float, y: float) -> float:
+            return y - self.mean_rev * x
+
+        def gamma_x(self, t: float, x: float, y: float) -> float:
+            return self.a + self.b * x + self.c * x**2
+
+        def x_mean(self, t: float):
+            return self.a ** 2 / (2 * self.mean_rev ** 2) * (1 - np.exp(-self.mean_rev * t))**2
+
+        def y_mean(self, t: float):
+            return self.a**2 / (2 * self.mean_rev) * (1 - np.exp(-2 * self.mean_rev * t))
+
+        def x_stddev(self, t: float):
+            return np.sqrt(self.a**2 / (2 * self.mean_rev) * (1 - np.exp(-2 * self.mean_rev * t)))
+
+        def y_stddev(self, t: float):
+            return 0.0
+
+        @classmethod
+        def r(cls, curve: Curve, t: float, x: float):
+            return curve.fwd(0, t) + x
+
+        def __repr__(self):
+            return f'dx[t] = (y[t] - kappa*x[t])dt + sigma(x[t])*dW[t]\n' \
+                   f'dy[t] = (sigma(x[t])**2 - 2*kappa*y[t])dt\n' \
+                   f'sigma(x)=a + b * x + c * x**2'
 
 
 class QuadraticAnnuityProcess(ConstMeanRevProcess):
@@ -140,14 +182,19 @@ class QuadraticAnnuityProcess(ConstMeanRevProcess):
         return 0.0
 
     def x_mean(self, t: float):
-        return 0.5 * self.a**2 * t**2
+        return self.a ** 2 / (2 * self.mean_rev ** 2) * (1 - np.exp(-self.mean_rev * t)) ** 2
 
     def y_mean(self, t: float):
-        return self.a ** 2 * t
+        return self.a ** 2 / (2 * self.mean_rev) * (1 - np.exp(-2 * self.mean_rev * t))
 
     def x_stddev(self, t: float):
-        return self.a * np.sqrt(t)
+        return np.sqrt(self.a ** 2 / (2 * self.mean_rev) * (1 - np.exp(-2 * self.mean_rev * t)))
 
     def y_stddev(self, t: float):
         return 0.0
 
+    def __repr__(self):
+        return 'Quadratic annuity process\n' \
+               'dx[t]=-k*x[t]*dt + sigma(x[t])*dW[t]\n' \
+               'dy[t]=(sigma(x[t])**2 - 2*k*x[t])*dt\n' \
+               f'sigma(x)={self.a:.2f} + {self.b:.2f} * x + {self.c:.2f} * x**2'
