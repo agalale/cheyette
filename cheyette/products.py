@@ -53,13 +53,15 @@ class BondOpt(CheyetteProduct):
 
 
 class PayerSwaption(CheyetteProduct):
-    def __init__(self, strike: float, expiry: float, underlying_times: np.array):
+    def __init__(self, strike: float, expiry: float, underlying_times: np.array, curve: Curve):
         CheyetteProduct.__init__(self, expiry)
         self.strike = strike
         self.underlying_times = underlying_times
 
+        self.underlying_dfs = np.array([curve.df(T) for T in self.underlying_times])
+
     def intrinsic_value(self, curve: Curve, process: CheyetteProcess, t: float, x: float, y: float) -> float:
-        return max(process.swap_value(curve, t, x, y, self.strike, self.underlying_times), 0.0)
+        return max(process.swap_value(curve, t, x, y, self.strike, self.underlying_times, self.underlying_dfs), 0.0)
 
     def __repr__(self):
         return f'PayerSwaption(strike={self.strike:.2f}, ' \

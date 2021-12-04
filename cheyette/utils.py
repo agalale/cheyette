@@ -1,9 +1,9 @@
-from abc import ABC, abstractmethod
 import numpy as np
 from bisect import bisect_left
-from typing import List
+from numba import jit
 
 
+@jit(nopython=True)
 def apply_tridiagonal(lower: np.array, diag: np.array, upper: np.array, arg: np.array, out: np.array):
     """
         Computes out = A * arg for tridiagonal A
@@ -20,6 +20,7 @@ def apply_tridiagonal(lower: np.array, diag: np.array, upper: np.array, arg: np.
         out[i] = lower[i-1] * up + diag[i] * mid + upper[i] * down
 
 
+@jit(nopython=True)
 def solve_tridiagonal(lower, diag, upper, upper_tmp, rhs_tmp, rhs, sol):
     """
     solves A * sol = rhs with tridiagonal A

@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 import numpy as np
+from functools import lru_cache
 
 
 class Curve(ABC):
@@ -22,6 +23,7 @@ class FlatCurve(Curve):
     def __init__(self, short_rate: float) -> None:
         self.short_rate = short_rate
 
+    @lru_cache(maxsize=None)
     def df(self, t: float) -> float:
         return np.exp(- t * self.short_rate)
 

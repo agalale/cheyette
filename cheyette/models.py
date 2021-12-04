@@ -43,7 +43,8 @@ class CheyettePDEModel(CheyetteModel):
         values = np.array([[product.intrinsic_value(curve, process, product.expiry, x, y) for y in mesh.ys] for x in mesh.xs])
         tmp_values = np.zeros_like(values)
         self.stepping_method.initialize(mesh)
-        operator = CheyetteOperator(mesh)
+        operator = CheyetteOperator(mesh, process, t_step, self.x_upper_bc, self.x_lower_bc,
+                                    self.y_upper_bc, self.y_lower_bc)
 
         for i, (t_this, t_next) in enumerate(zip(evolution_times, evolution_times[1:])):
             self.stepping_method.do_one_step(operator, t_this, t_next, values, tmp_values,
@@ -107,6 +108,7 @@ class CheyetteAnalyticModel(CheyetteModel):
             """
             Jamshidian decomposition
             """
+            assert product.strike > 0, "Swaption strike must be postive for Jamshidian decomposition to work"
             T_first = product.underlying_times[0]
             T_last = product.underlying_times[-1]
             Ts = product.underlying_times
