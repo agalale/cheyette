@@ -53,7 +53,7 @@ class CheyettePDEModel(CheyetteModel):
                                              curve, process, product)
             values[:] = tmp_values
         results = dict()
-        results['PV'] = mesh.interpolate(values, 0.0, 0.0)
+        results['PV'] = mesh.interpolate(values, 0.0, 0.0) * product.notional
         return results
 
     def __repr__(self):
@@ -99,9 +99,9 @@ class CheyetteAnalyticModel(CheyetteModel):
             nu = s ** 2 / (2 * k ** 3) * (1 - np.exp(-k * (T - S))) ** 2 * (1 - np.exp(-2 * k * S))
             d_plus = (np.log(B_T / (K * B_S)) + 0.5 * nu) / np.sqrt(nu)
             d_minus = d_plus - np.sqrt(nu)
-            if product.option_type == OptionType.call:
+            if product.option_type == OptionType.Call:
                 results['PV'] = B_T * norm.cdf(d_plus) - K * B_S * norm.cdf(d_minus)
-            elif product.option_type == OptionType.put:
+            elif product.option_type == OptionType.Put:
                 results['PV'] = K * B_S * norm.cdf(-d_minus) - B_T * norm.cdf(-d_plus)
 
         if isinstance(product, PayerSwaption):
@@ -135,7 +135,7 @@ class CheyetteAnalyticModel(CheyetteModel):
                     break
 
             strikes = [np.exp(-mid_r*(T - T_first)) for T in Ts[1:]]
-            bond_opts = [BondOpt(K, product.expiry, T, OptionType.put) for K, T in zip(strikes, Ts[1:])]
+            bond_opts = [BondOpt(K, product.expiry, T, OptionType.Put, notional=1.0) for K, T in zip(strikes, Ts[1:])]
             bond_opts_pvs = [self.price(curve, process, p, valuation_time)['PV'] for p in bond_opts]
 
             results['PV'] = bond_opts_pvs[-1] + sum(K * tau * pv for tau, pv in zip(taus, bond_opts_pvs))
@@ -144,6 +144,7 @@ class CheyetteAnalyticModel(CheyetteModel):
         else:
             Exception(f'Product {product.__class__} is not supported by the analytic model')
 
+        results['PV'] *= product.notional
         return results
 
     def __repr__(self):

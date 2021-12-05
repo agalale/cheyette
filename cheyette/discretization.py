@@ -116,8 +116,8 @@ class CheyetteOperator:
         y_upper_bc.adjust_matrix_next(self.y_lower_plus[:, -1])
         y_upper_bc.adjust_matrix_next(self.y_lower_minus[:, -1])
 
-    def evaluate_coefs(self, t: float, curve: Curve) -> None:
-        self.r[:] = np.array([[curve.fwd(0, t) + x for _ in self.mesh.ys] for x in self.mesh.xs])
+    def evaluate_coefs(self, t: float, curve: Curve, process: CheyetteProcess) -> None:
+        self.r[:] = np.array([[process.r(curve, t, x) for _ in self.mesh.ys] for x in self.mesh.xs])
         self.x_diag_minus[1:-1, :] = self.x_diag[1:-1, :] - (-0.5) * self.txx_ratio * 0.5 * self.mesh.x_step ** 2 * self.r[1:-1, :]
         self.x_diag_plus[1:-1, :] = 2 - self.x_diag_minus[1:-1, :]
         self.y_diag_plus[:, 1:-1] = 1 - (0.5) * 0.5 * self.t_step * self.r[:, 1:-1]
@@ -177,7 +177,7 @@ class PeacemanRachford(CheyetteStepping):
 
         t_mid = 0.5*(t_this + t_next)
 
-        operator.evaluate_coefs(t_mid, curve)
+        operator.evaluate_coefs(t_mid, curve, process)
 
         operator.y_apply(old_values, self.x_rhs, operator.y_lower_plus, operator.y_diag_plus, operator.y_upper_plus)
         x_lower_bc.adjust_x_rhs(t_mid, self.mesh.xs[0], self.mesh.ys, self.x_rhs[0, :], curve, process, product)

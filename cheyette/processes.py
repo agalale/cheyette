@@ -211,30 +211,30 @@ class QuadraticAnnuityProcess(ConstMeanRevProcess):
     dy[t] = (sigma(t, x, y) ** 2 - 2 * k * y[t]) * dt
     sigma(t, x, y) = a + b * x + c * x ^ 2
     """
-    def __init__(self, mean_rev: float, a: float, b: float, c: float):
+    def __init__(self, mean_rev: float, local_vol: float, skew: float, smile: float):
         ConstMeanRevProcess.__init__(self, mean_rev)
-        self.a = a
-        self.b = b
-        self.c = c
+        self.local_vol = local_vol
+        self.skew = skew
+        self.smile = smile
 
     def mu_x(self, x: float, y: float) -> float:
         return - self.mean_rev * x
 
-    def gamma_x(self, x: float, y:float) -> float:
-        return self.a + self.b * x + self.c * x ** 2
+    def gamma_x(self, x: float, y: float) -> float:
+        return self.local_vol + self.skew * x + self.smile * x ** 2
 
     @classmethod
     def r(cls, curve: Curve, t: float, x: float):
         return 0.0
 
     def x_mean(self, t: float):
-        return self.a ** 2 / (2 * self.mean_rev ** 2) * (1 - np.exp(-self.mean_rev * t)) ** 2
+        return self.local_vol ** 2 / (2 * self.mean_rev ** 2) * (1 - np.exp(-self.mean_rev * t)) ** 2
 
     def y_mean(self, t: float):
-        return self.a ** 2 / (2 * self.mean_rev) * (1 - np.exp(-2 * self.mean_rev * t))
+        return self.local_vol ** 2 / (2 * self.mean_rev) * (1 - np.exp(-2 * self.mean_rev * t))
 
     def x_stddev(self, t: float):
-        return np.sqrt(self.a ** 2 / (2 * self.mean_rev) * (1 - np.exp(-2 * self.mean_rev * t)))
+        return np.sqrt(self.local_vol ** 2 / (2 * self.mean_rev) * (1 - np.exp(-2 * self.mean_rev * t)))
 
     def y_stddev(self, t: float):
         return 0.0
@@ -243,4 +243,4 @@ class QuadraticAnnuityProcess(ConstMeanRevProcess):
         return 'Quadratic annuity process\n' \
                'dx[t]=-k*x[t]*dt + sigma(x[t])*dW[t]\n' \
                'dy[t]=(sigma(x[t])**2 - 2*k*x[t])*dt\n' \
-               f'sigma(x)={self.a:.2f} + {self.b:.2f} * x + {self.c:.2f} * x**2'
+               f'sigma(x)={self.local_vol:.2f} + {self.skew:.2f} * x + {self.smile:.2f} * x**2'
