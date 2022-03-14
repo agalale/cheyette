@@ -1,9 +1,9 @@
-from abc import ABC, abstractmethod
 import numpy as np
 from bisect import bisect_left
-from typing import List
+from numba import jit
 
 
+@jit(nopython=True)
 def apply_tridiagonal(lower: np.array, diag: np.array, upper: np.array, arg: np.array, out: np.array):
     """
         Computes out = A * arg for tridiagonal A
@@ -20,6 +20,7 @@ def apply_tridiagonal(lower: np.array, diag: np.array, upper: np.array, arg: np.
         out[i] = lower[i-1] * up + diag[i] * mid + upper[i] * down
 
 
+@jit(nopython=True)
 def solve_tridiagonal(lower, diag, upper, upper_tmp, rhs_tmp, rhs, sol):
     """
     solves A * sol = rhs with tridiagonal A
@@ -75,3 +76,16 @@ def bilin_interp(xs: np.array, ys: np.array, values: np.array, x: float, y: floa
              + z22 * (x - x1) * (y - y1) ) \
             / ((x2 - x1) * (y2 - y1))
 
+
+class NewtonSolver:
+    def __init__(self, f, df) -> None:
+        self.f = f
+        self.df = df
+
+    def step(self, x: float) -> float:
+        return x - self.f(x) / self.df(x)
+
+    def solve(self, x: float, tolerance: float = 1e-4) -> float:
+        while abs(self.f(x)) > tolerance:
+            x = self.step(x)
+        return x
